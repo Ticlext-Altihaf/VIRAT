@@ -10,19 +10,27 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Dataset map[string]string
-
 type progressWriter struct {
-	total   int64
-	current int64
+    total    int64
+    current  int64
+    ticker   *time.Ticker
+    filename string
 }
 
 func (pw *progressWriter) Write(p []byte) (int, error) {
 	n := len(p)
 	pw.current += int64(n)
-	fmt.Printf("Downloading... %d%% \n", pw.current*100/pw.total)
+
+	select {
+	case <-pw.ticker.C:
+		fmt.Printf("Downloading %s... %d%% \n", pw.filename, pw.current*100/pw.total)
+	default:
+	}
+
 	return n, nil
 }
 
@@ -40,7 +48,6 @@ func IsVideoCorrupted(path string) (bool, error) {
 
 	return false, nil
 }
-
 func DownloadVideos() error {
 	file, err := os.Open("dataset.json")
 	if err != nil {
@@ -56,11 +63,15 @@ func DownloadVideos() error {
 	}
 
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // limit to 5 concurrent downloads
 
 	for filename, url := range dataset {
 		wg.Add(1)
 		go func(filename, url string) {
 			defer wg.Done()
+			sem <- struct{}{} // acquire a token
+			defer func() { <-sem }() // release the token
+
 			path := filepath.Join("Video", filename)
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				corrupted, err := IsVideoCorrupted(path)
@@ -91,12 +102,17 @@ func DownloadVideos() error {
 			}
 			defer resp.Body.Close()
 
-			pw := &progressWriter{total: resp.ContentLength}
+			pw := &progressWriter{
+				total:    resp.ContentLength,
+				ticker:   time.NewTicker(5 * time.Second),
+				filename: filename,
+			}
 			_, err = io.Copy(out, io.TeeReader(resp.Body, pw))
+			defer pw.ticker.Stop()
 			if err != nil {
 				fmt.Printf("failed to copy data to file: %v\n", err)
 			}
-			fmt.Println("\nDownload finished")
+			fmt.Printf("\nDownload of %s finished\n", filename)
 		}(filename, url)
 	}
 
