@@ -37,13 +37,16 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 func IsVideoCorrupted(path string) (bool, error) {
 	cmd := exec.Command("ffmpeg", "-v", "error", "-i", path, "-f", "null", "-")
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("%s: %v", output, err)
-	}
+	
+	outputStr := string(output)
 
-	if strings.Contains(string(output), "error") {
+	if strings.Contains(outputStr, "error") || strings.Contains(outputStr, "Invalid data found when processing input"){
 		fmt.Println("Video is corrupted: ", path, string(output))
 		return true, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("%s: %v", output, err)
 	}
 
 	return false, nil
@@ -63,7 +66,7 @@ func DownloadVideos() error {
 	}
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5) // limit to 5 concurrent downloads
+	sem := make(chan struct{}, 15) // limit to x concurrent downloads
 
 	for filename, url := range dataset {
 		wg.Add(1)
