@@ -66,7 +66,7 @@ func DownloadVideos() error {
 	}
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 15) // limit to x concurrent downloads
+	sem := make(chan struct{}, 8) // limit to x concurrent downloads
 
 	for filename, url := range dataset {
 		wg.Add(1)
