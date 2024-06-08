@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,45 +36,123 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 
 	return n, nil
 }
-
 func IsVideoCorrupted(path string) (bool, error) {
-	cmd := exec.Command("ffmpeg", "-v", "error", "-i", path, "-f", "null", "-")
-	output, err := cmd.CombinedOutput()
-	
-	outputStr := string(output)
+    // Create a context with a timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // 30 seconds timeout
+    defer cancel()
 
-	if strings.Contains(outputStr, "error") || strings.Contains(outputStr, "Invalid data found when processing input"){
-		fmt.Println("Video is corrupted: ", path, string(output))
-		return true, nil
-	}
+    // Use exec.CommandContext instead of exec.Command to apply the timeout
+    cmd := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "default=noprint_wrappers=1:nokey=1", path)
+    output, err := cmd.CombinedOutput()
 
-	if err != nil {
-		return false, fmt.Errorf("%s: %v", output, err)
-	}
+    outputStr := string(output)
 
-	return false, nil
+    if ctx.Err() == context.DeadlineExceeded {
+        // The command was killed due to the timeout
+        return true, nil // seem good
+    }
+
+    if strings.Contains(outputStr, "error") || strings.Contains(outputStr, "Invalid data found when processing input") {
+        fmt.Println("Video is corrupted: ", path, outputStr)
+        return true, nil
+    }
+
+    if err != nil {
+        return false, fmt.Errorf("%s: %v", outputStr, err)
+    }
+
+    return false, nil
+}
+
+// CacheEntry represents the cache structure for each video file.
+type CacheEntry struct {
+    Hash     string `json:"hash"`
+    Corrupted bool   `json:"corrupted"`
+}
+
+// ReadCache reads the cache from cache.json.
+func ReadCache() (map[string]CacheEntry, error) {
+    cache := make(map[string]CacheEntry)
+    data, err := os.ReadFile("cache.json")
+    if err != nil {
+        if os.IsNotExist(err) {
+            return cache, nil // Return an empty cache if the file doesn't exist
+        }
+        return nil, err
+    }
+    err = json.Unmarshal(data, &cache)
+    return cache, err
+}
+
+// WriteCache writes the cache to cache.json.
+func WriteCache(cache map[string]CacheEntry) error {
+    data, err := json.Marshal(cache)
+    if err != nil {
+        return err
+    }
+    return os.WriteFile("cache.json", data, 0644)
+}
+
+// HashFile generates a SHA256 hash for the contents of a file.
+func HashFile(path string) (string, error) {
+    file, err := os.Open(path)
+    if err != nil {
+        return "", err
+    }
+    defer file.Close()
+
+    hasher := sha256.New()
+    if _, err := io.Copy(hasher, file); err != nil {
+        return "", err
+    }
+
+    return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func ValidVideos() ([]string, error) {
-	files, err := os.ReadDir("Video")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read 'Video' directory: %w", err)
-	}
+    cache, err := ReadCache()
+    if err != nil {
+        return nil, fmt.Errorf("failed to read cache: %w", err)
+    }
 
-	var validVideos []string
-	for _, file := range files {
-		if !file.IsDir() {
-			corrupted, err := IsVideoCorrupted(filepath.Join("Video", file.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("failed to check if video '%s' is corrupted: %w", file.Name(), err)
-			}
-			if !corrupted {
-				validVideos = append(validVideos, file.Name())
-			}
-		}
-	}
+    files, err := os.ReadDir("Video")
+    if err != nil {
+        return nil, fmt.Errorf("failed to read 'Video' directory: %w", err)
+    }
 
-	return validVideos, nil
+    var validVideos []string
+    for _, file := range files {
+        if !file.IsDir() {
+            filePath := filepath.Join("Video", file.Name())
+            fileHash, err := HashFile(filePath)
+            if err != nil {
+                return nil, fmt.Errorf("failed to hash video '%s': %w", file.Name(), err)
+            }
+
+            if entry, exists := cache[fileHash]; exists {
+                if !entry.Corrupted {
+                    validVideos = append(validVideos, file.Name())
+                }
+                continue
+            }
+
+            corrupted, err := IsVideoCorrupted(filePath)
+            if err != nil {
+                return nil, fmt.Errorf("failed to check if video '%s' is corrupted: %w", file.Name(), err)
+            }
+
+            cache[fileHash] = CacheEntry{Hash: fileHash, Corrupted: corrupted}
+            if !corrupted {
+                validVideos = append(validVideos, file.Name())
+            }
+        }
+    }
+
+    if err := WriteCache(cache); err != nil {
+        return nil, fmt.Errorf("failed to write cache: %w", err)
+    }
+
+    return validVideos, nil
 }
 
 func DownloadVideos(maxDownloads int) error {
@@ -147,5 +228,30 @@ func DownloadVideos(maxDownloads int) error {
 	}
 
 	wg.Wait()
+	return nil
+}
+
+func CleanupCorruptedVideos() error {
+	files, err := os.ReadDir("Video")
+	if err != nil {
+		return fmt.Errorf("failed to read 'Video' directory: %w", err)
+	}
+
+	for _, file := range files {
+		if !file.IsDir() {
+			corrupted, err := IsVideoCorrupted(filepath.Join("Video", file.Name()))
+			if err != nil {
+				return fmt.Errorf("failed to check if video '%s' is corrupted: %w", file.Name(), err)
+			}
+			if corrupted {
+				err = os.Remove(filepath.Join("Video", file.Name()))
+				if err != nil {
+					return fmt.Errorf("failed to remove corrupted video: %w", err)
+				}
+				fmt.Printf("Removed corrupted video: %s\n", file.Name())
+			}
+		}
+	}
+
 	return nil
 }
