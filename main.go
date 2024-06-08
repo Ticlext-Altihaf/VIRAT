@@ -10,10 +10,32 @@ import (
 )
 
 func main() {
-	var err = DownloadVideos()
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	// get args
+	var single_vid bool = false
+	var dont_download bool = false
+	for _, arg := range os.Args[1:] {
+		if arg == "-s" {
+			single_vid = true
+		}
+		if arg == "-d" {
+			dont_download = true
+		}
+	}
+	var download_vids_count = -1
+	if single_vid {
+		download_vids_count = 1
+	}
+
+	if dont_download {
+		fmt.Println("Skipping download")
+	} else {
+		fmt.Println("Downloading videos")
+
+		var err = DownloadVideos(download_vids_count)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
 	}
 
 	var wg sync.WaitGroup

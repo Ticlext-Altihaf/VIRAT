@@ -24,3 +24,4 @@ go.work.sum
 .vscode
 Video
 __debug*
+virat_webrtc_example*

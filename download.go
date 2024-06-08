@@ -51,7 +51,30 @@ func IsVideoCorrupted(path string) (bool, error) {
 
 	return false, nil
 }
-func DownloadVideos() error {
+
+func ValidVideos() ([]string, error) {
+	files, err := os.ReadDir("Video")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read 'Video' directory: %w", err)
+	}
+
+	var validVideos []string
+	for _, file := range files {
+		if !file.IsDir() {
+			corrupted, err := IsVideoCorrupted(filepath.Join("Video", file.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("failed to check if video '%s' is corrupted: %w", file.Name(), err)
+			}
+			if !corrupted {
+				validVideos = append(validVideos, file.Name())
+			}
+		}
+	}
+
+	return validVideos, nil
+}
+
+func DownloadVideos(maxDownloads int) error {
 	file, err := os.Open("dataset.json")
 	if err != nil {
 		return fmt.Errorf("failed to open dataset.json: %w", err)
@@ -67,8 +90,12 @@ func DownloadVideos() error {
 
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8) // limit to x concurrent downloads
-
+	var i int = 0
 	for filename, url := range dataset {
+		if i >= maxDownloads && maxDownloads != -1 {
+			break
+		}
+		i++
 		wg.Add(1)
 		go func(filename, url string) {
 			defer wg.Done()
